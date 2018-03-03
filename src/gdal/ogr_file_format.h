@@ -54,6 +54,11 @@ public:
 	 * Creates an importer for files supported by OGR.
 	 */
 	std::unique_ptr<Importer> makeImporter(QIODevice* stream, Map* map, MapView* view) const override;
+
+	/**
+	 * Creates an Exporter for files supported by OGR.
+	 */
+	std::unique_ptr<Exporter> makeExporter(QIODevice* stream, Map* map, MapView* view) const override;
 };
 
 
