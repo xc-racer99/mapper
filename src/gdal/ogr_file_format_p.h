@@ -24,6 +24,7 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QHash>
 
 // The GDAL/OGR C API is more stable than the C++ API.
@@ -68,7 +69,33 @@ namespace ogr
 	 */
 	using unique_transformation = std::unique_ptr<typename std::remove_pointer<OGRCoordinateTransformationH>::type, OGRCoordinateTransformationHDeleter>;
 	
+
+	class OGRDataSourceHDeleter
+	{
+	public:
+		void operator()(OGRDataSourceH data_source) const
+		{
+			OGRReleaseDataSource(data_source);
+		}
+	};
+
+	/** A convenience class for OGR C API datasource handles, similar to std::unique_ptr. */
+	using unique_datasource = std::unique_ptr<typename std::remove_pointer<OGRDataSourceH>::type, OGRDataSourceHDeleter>;
+
+
+	class OGRFieldDefnHDeleter
+	{
+	public:
+		void operator()(OGRFieldDefnH field_defn) const
+		{
+			OGR_Fld_Destroy(field_defn);
+		}
+	};
+
+	/** A convenience class for OGR C API field definition handles, similar to std::unique_ptr. */
+	using unique_fielddefn = std::unique_ptr<typename std::remove_pointer<OGRFieldDefnH>::type, OGRFieldDefnHDeleter>;
 	
+
 	class OGRSpatialReferenceHDeleter
 	{
 	public:
@@ -93,7 +120,7 @@ namespace ogr
 		}
 	};
 	
-	/** A convenience class for OGR C API feature handles, similar to std::unique_ptr. */
+	/** A convenience class for OGR C API style manager handles, similar to std::unique_ptr. */
 	using unique_stylemanager = std::unique_ptr<typename std::remove_pointer<OGRStyleMgrH>::type, OGRStyleMgrHDeleter>;
 }
 
@@ -262,8 +289,6 @@ private:
 	bool georeferencing_import_enabled;
 };
 
-
-
 // ### inline code ###
 
 inline
@@ -271,6 +296,51 @@ MapCoord OgrFileImport::toMapCoord(double x, double y) const
 {
 	return (this->*to_map_coord)(x, y);
 }
+
+/**
+ * An Exporter to geospatial vector data supported by OGR.
+ *
+ * OGR needs to know the filename. The filename is derived from
+ * a QFile passed as stream to the constructor.
+ */
+class OgrFileExport : public Exporter
+{
+	Q_DECLARE_TR_FUNCTIONS(OpenOrienteering::OgrFileExport)
+
+public:
+	OgrFileExport(QIODevice* stream, Map *map, MapView *view);
+	~OgrFileExport() override;
+
+	void doExport() override;
+
+protected:
+	static void vsiRmDirRecursive(const char* dir_name);
+	void vsiCopyFiles();
+
+	void addPointsToLayer(OGRLayerH layer, const std::function<bool (const Object*)>& condition);
+	void addTextToLayer(OGRLayerH layer, const std::function<bool (const Object*)>& condition);
+	void addLinesToLayer(OGRLayerH layer, const std::function<bool (const Object*)>& condition);
+	void addAreasToLayer(OGRLayerH layer, const std::function<bool (const Object*)>& condition);
+
+	OGRLayerH createLayer(const char* layer_name, OGRwkbGeometryType type);
+
+private:
+	// Actual file
+	QFileInfo output_file_info;
+	QIODevice *io_device;
+
+	// Main location in GDAL's vsimem
+	static constexpr const char* vsimem_path = "/vsimem/ogr_export/";
+
+	ogr::unique_datasource po_ds;
+	ogr::unique_fielddefn o_name_field;
+	ogr::unique_srs map_srs;
+	ogr::unique_transformation transformation;
+
+	// File format quirks
+	bool need_wgs1984 = false;
+	bool one_layer = false;
+};
 
 
 }  // namespace OpenOrienteering

@@ -29,6 +29,8 @@
 
 #include <cpl_error.h>
 #include <cpl_conv.h>
+#include <cpl_string.h>
+#include <gdal.h>
 #include <ogr_api.h>
 #include <ogr_srs_api.h>
 
@@ -38,6 +40,7 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QFile>
+#include <QFileInfo>
 #include <QHash>
 #include <QIODevice>
 #include <QLatin1Char>
@@ -69,23 +72,22 @@
 
 // IWYU pragma: no_forward_declare QFile
 
-
 namespace OpenOrienteering {
 
 namespace ogr {
-	
-	class OGRDataSourceHDeleter
+
+	class GDALDriverHDeleter
 	{
 	public:
-		void operator()(OGRDataSourceH data_source) const
+		void operator()(GDALDriverH driver) const
 		{
-			OGRReleaseDataSource(data_source);
+			OGR_F_Destroy(driver);
 		}
 	};
-	
-	/** A convenience class for OGR C API datasource handles, similar to std::unique_ptr. */
-	using unique_datasource = std::unique_ptr<typename std::remove_pointer<OGRDataSourceH>::type, OGRDataSourceHDeleter>;
-	
+
+	/** A convenience class for OGR C API feature handles, similar to std::unique_ptr. */
+	using unique_driver = std::unique_ptr<typename std::remove_pointer<GDALDriverH>::type, GDALDriverHDeleter>;
+
 	
 	class OGRFeatureHDeleter
 	{
@@ -99,7 +101,7 @@ namespace ogr {
 	/** A convenience class for OGR C API feature handles, similar to std::unique_ptr. */
 	using unique_feature = std::unique_ptr<typename std::remove_pointer<OGRFeatureH>::type, OGRFeatureHDeleter>;
 	
-	
+
 	class OGRGeometryHDeleter
 	{
 	public:
@@ -111,7 +113,6 @@ namespace ogr {
 	
 	/** A convenience class for OGR C API geometry handles, similar to std::unique_ptr. */
 	using unique_geometry = std::unique_ptr<typename std::remove_pointer<OGRGeometryH>::type, OGRGeometryHDeleter>;
-	
 }  // namespace ogr
 
 
@@ -293,7 +294,10 @@ namespace {
 // ### OgrFileFormat ###
 
 OgrFileFormat::OgrFileFormat()
- : FileFormat(OgrFile, "OGR", ::OpenOrienteering::ImportExport::tr("Geospatial vector data"), QString{}, ImportSupported)
+ : FileFormat(OgrFile, "OGR",
+              ::OpenOrienteering::ImportExport::tr("Geospatial vector data"),
+              QString{},
+              ImportSupported | ExportSupported | ExportLossy)
 {
 	for (const auto& extension : GdalManager().supportedVectorExtensions())
 		addExtension(QString::fromLatin1(extension));
@@ -303,6 +307,11 @@ OgrFileFormat::OgrFileFormat()
 std::unique_ptr<Importer> OgrFileFormat::makeImporter(QIODevice* stream, Map* map, MapView* view) const
 {
 	return std::make_unique<OgrFileImport>(stream, map, view);
+}
+
+std::unique_ptr<Exporter> OgrFileFormat::makeExporter(QIODevice* stream, Map* map, MapView* view) const
+{
+	return std::make_unique<OgrFileExport>(stream, map, view);
 }
 
 
@@ -1408,5 +1417,445 @@ LatLon OgrFileImport::calcAverageLatLon(OGRDataSourceH data_source)
 	return num_coords ? LatLon{ y / num_coords, x / num_coords } : LatLon{};
 }
 
+// ### OgrFileExport ###
+
+OgrFileExport::OgrFileExport(QIODevice *stream, Map *map, MapView *view)
+: Exporter(stream, map, view),
+  io_device(stream)
+{
+	// Extract filename from QIODevice
+	output_file_info = qobject_cast<const QFileDevice*>(stream)->fileName();
+}
+
+OgrFileExport::~OgrFileExport()
+{
+	vsiRmDirRecursive(vsimem_path);
+}
+
+void OgrFileExport::doExport()
+{
+	// Create the path
+	if (VSIMkdir(vsimem_path, 0644) != 0)
+		throw FileFormatException(tr("Failed to create directory in vsimem"));
+
+	// Choose driver and setup format-specific features
+	QString file_extn = output_file_info.suffix();
+	GDALDriverH po_driver;
+
+#ifdef GDAL_DMD_EXTENSIONS
+	// GDAL >= 2.0
+	auto count = GDALGetDriverCount();
+	for (auto i = 0; i < count; ++i)
+	{
+		auto driver_data = GDALGetDriver(i);
+
+		auto type = GDALGetMetadataItem(driver_data, GDAL_DCAP_VECTOR, nullptr);
+		if (qstrcmp(type, "YES") != 0)
+			continue;
+
+		auto cap_create = GDALGetMetadataItem(driver_data, GDAL_DCAP_CREATE, nullptr);
+		if (qstrcmp(cap_create, "YES") != 0)
+			continue;
+
+		auto cap_vsi = GDALGetMetadataItem(driver_data, GDAL_DCAP_VIRTUALIO, nullptr);
+		if (qstrcmp(cap_vsi, "YES") != 0)
+			continue;
+
+		auto extensions_raw = GDALGetMetadataItem(driver_data, GDAL_DMD_EXTENSIONS, nullptr);
+		auto extensions = QByteArray::fromRawData(extensions_raw, int(qstrlen(extensions_raw)));
+		for (auto pos = 0; pos >= 0; )
+		{
+			auto start = pos ? pos + 1 : 0;
+			pos = extensions.indexOf(' ', start);
+			auto extension = extensions.mid(start, pos - start);
+			if (file_extn == QString::fromLatin1(extension))
+			{
+				auto cap_ogr = GDALGetMetadataItem(driver_data, GDAL_DCAP_VECTOR, nullptr);
+				if (qstrcmp(cap_ogr, "YES") != 0)
+					continue;
+				auto cap_open = GDALGetMetadataItem(driver_data, GDAL_DCAP_CREATE, nullptr);
+				if (qstrcmp(cap_open, "YES") != 0)
+					continue;
+				po_driver = driver_data;
+				break;
+			}
+		}
+	}
+#else
+	const char *psz_driver_name;
+	if (file_extn.compare(QString::fromLatin1("gpx"), Qt::CaseInsensitive) == 0)
+		psz_driver_name = "GPX";
+	else if (file_extn.compare(QString::fromLatin1("kml"), Qt::CaseInsensitive) == 0)
+		psz_driver_name = "KML";
+	else if (file_extn.compare(QString::fromLatin1("shp"), Qt::CaseInsensitive) == 0)
+		psz_driver_name = "ESRI Shapefile";
+	else
+		throw FileFormatException(tr("Unknown file extension %1, only GPX, KML, and SHP files are supported.").arg(file_extn));
+
+	po_driver = OGRGetDriverByName(psz_driver_name);
+#endif
+
+	if (!po_driver)
+		throw FileFormatException(tr("Couldn't find a driver for file extension %1").arg(file_extn));
+
+	if (qstrcmp(GDALGetDriverShortName(po_driver), "GPX") == 0 || qstrcmp(GDALGetDriverShortName(po_driver), "LIBKML") == 0)
+		need_wgs1984 = true;
+	else if (qstrcmp(GDALGetDriverShortName(po_driver), "DXF") == 0)
+		one_layer = true;
+
+	// Check if map is georeferenced
+	const auto& georef = map->getGeoreferencing();
+	bool local_only = false;
+	if (georef.getState() == Georeferencing::Local)
+	{
+		local_only = true;
+		addWarning(tr("The map is not georeferenced.  Local georeferencing only."));
+	}
+
+	// Make sure GDAL can work with the georeferencing info
+	map_srs = ogr::unique_srs { OSRNewSpatialReference(nullptr) };
+	if (!local_only)
+	{
+		OSRSetProjCS(map_srs.get(), "Projected map SRS");
+		OSRSetWellKnownGeogCS(map_srs.get(), "WGS84");
+		auto spec = QByteArray(georef.getProjectedCRSSpec().toLatin1() + " +wktext");
+		if (OSRImportFromProj4(map_srs.get(), spec) != OGRERR_NONE)
+		{
+			local_only = true;
+			addWarning(tr("Failed to properly create the export georeferencing info.  Local georeferencing only."));
+		}
+	}
+
+	/**
+	 * Only certain drivers work without georeferencing info
+	 * Based on http://www.gdal.org/ogr_formats.html as of March 5, 2018
+	 * */
+	static const std::vector<QByteArray> local_drivers = {
+	    "ARCGEN", "BNA", "DWG", "DXF",
+	    "CSV", "Geomedia", "INGRES", "OpenJUMP .jml",
+	    "DGN", "DGNv8", "ODS", "REC",
+	    "SEGY", "XLS", "XLSX"
+	};
+	if (local_only)
+	{
+		QByteArray driver_name = GDALGetDriverShortName(po_driver);
+		if (std::find(local_drivers.begin(), local_drivers.end(), driver_name) == local_drivers.end())
+			throw FileFormatException(tr("The %1 driver requires valid georefencing info.")
+		                              .arg(QString::fromLatin1(driver_name)));
+	}
+
+	// Create output dataset
+	po_ds = ogr::unique_datasource(OGR_Dr_CreateDataSource(
+	                                   po_driver,
+	                                   QString::fromLatin1(vsimem_path).append(output_file_info.fileName()).toLatin1(),
+	                                   nullptr));
+	if (!po_ds)
+		throw FileFormatException(tr("Failed to create dataset: %1").arg(QString::fromLatin1(CPLGetLastErrorMsg())));
+
+	// For GPX/LIBKML driver, coords have to be in EPSG:4326/WGS 1984
+	auto geo_srs = ogr::unique_srs { OSRNewSpatialReference(nullptr) };
+	OSRSetWellKnownGeogCS(geo_srs.get(), "WGS84");
+	transformation = ogr::unique_transformation { OCTNewCoordinateTransformation(map_srs.get(), geo_srs.get()) };
+
+	// Name field definition
+	o_name_field = ogr::unique_fielddefn(OGR_Fld_Create("Name", OFTString));
+	OGR_Fld_SetWidth(o_name_field.get(), 32);
+
+	if (one_layer)
+	{
+		auto layer = createLayer("Layer", wkbUnknown);
+		if (layer == nullptr)
+			throw FileFormatException(tr("Failed to create layer for objects"));
+
+		addPointsToLayer(layer,
+		                 [](const Object* object){ return object->getSymbol()->getType() == Symbol::Point; });
+		addTextToLayer(layer,
+		               [](const Object* object){ return object->getSymbol()->getType() == Symbol::Text; });
+		addLinesToLayer(layer,
+		                [](const Object* object){ return object->getSymbol()->getType() == Symbol::Line; });
+		addAreasToLayer(layer,
+		                [](const Object* object){ return object->getSymbol()->getType() == Symbol::Area ||
+			        object->getSymbol()->getType() == Symbol::Combined; });
+	}
+	else
+	{
+		// These have to be in this order for some drivers (eg GPX)
+		auto point_layer = createLayer(QString::fromLatin1("%1_points").arg(output_file_info.baseName()).toLatin1(), wkbPoint);
+		if (point_layer != nullptr)
+		{
+			addPointsToLayer(point_layer,
+			                            [](const Object* object){ return object->getSymbol()->getType() == Symbol::Point; });
+			addTextToLayer(point_layer,
+			                            [](const Object* object){ return object->getSymbol()->getType() == Symbol::Text; });
+		}
+		else
+		{
+			addWarning(tr("Unable to export point and text objects"));
+		}
+
+		auto line_layer = createLayer(QString::fromLatin1("%1_lines").arg(output_file_info.baseName()).toLatin1(), wkbLineString);
+		if (line_layer != nullptr)
+			addLinesToLayer(line_layer,
+			                [](const Object* object){ return object->getSymbol()->getType() == Symbol::Line; });
+		else
+			addWarning(tr("Unable to export line objects"));
+
+		auto area_layer = createLayer(QString::fromLatin1("%1_areas").arg(output_file_info.baseName()).toLatin1(), wkbPolygon);
+		if (area_layer != nullptr)
+			addAreasToLayer(area_layer,
+			                [](const Object* object){ return object->getSymbol()->getType() == Symbol::Area ||
+				        object->getSymbol()->getType() == Symbol::Combined; });
+		else
+			addWarning(tr("Unable to export area objects"));
+	}
+
+	// Close the dataset to flush all data
+	po_ds.reset();
+
+	// Copy files to IODevice
+	vsiCopyFiles();
+}
+
+void OgrFileExport::vsiCopyFiles()
+{
+	// Go through our virtual filesystem
+	std::unique_ptr<char*, decltype(&CSLDestroy)> names(VSIReadDir(vsimem_path), &CSLDestroy);
+	for (auto i = 0; names.get()[i] != NULL; i++)
+	{
+		VSIStatBufL s_stat;
+		QString vsi_full_path = QString::fromLatin1(vsimem_path).append(QString::fromLatin1(names.get()[i]));
+		if (VSIStatExL(vsi_full_path.toLatin1(), &s_stat, VSI_STAT_NATURE_FLAG) == 0)
+		{
+			if (VSI_ISDIR(s_stat.st_mode))
+			{
+				// VSIReadDir includes the current path in output
+				if (vsi_full_path.compare(QString::fromLatin1(vsimem_path)))
+					addWarning(tr("Found unknown directory %1.  Please report this as a bug.").append(vsi_full_path));
+			} else {
+				if (output_file_info.fileName().compare(QString::fromLatin1(names.get()[i])) == 0)
+				{
+					// Write to IODevice
+					vsi_l_offset length;
+					std::unique_ptr<GByte,  decltype(&std::free)> pointer(
+					            VSIGetMemFileBuffer(vsi_full_path.toLatin1(), &length, TRUE), &std::free);
+					if (pointer.get() == nullptr)
+						throw FileFormatException(tr("Failed to read from temporary file in memory"));
+					io_device->write(reinterpret_cast<const char*>(pointer.get()), length);
+				}
+				else
+				{
+					// Handle any "extra" files, eg dbf, shx for shapefiles
+					// VSIRename() is only for copying within same folder and can't be used here
+					QFile out_file(output_file_info.absolutePath()
+					               .append(QString::fromLatin1("/")).append(QString::fromLatin1(names.get()[i])));
+					if (!out_file.open(QIODevice::WriteOnly))
+						throw FileFormatException(tr("Failed to open output for auxiliary file %1").arg(out_file.fileName()));
+					vsi_l_offset length;
+					std::unique_ptr<GByte, decltype(&std::free)> pointer(
+					            VSIGetMemFileBuffer(vsi_full_path.toLatin1(), &length, TRUE), &std::free);
+					if (pointer.get() == nullptr)
+						throw FileFormatException(tr("Failed to read from temporary auxiliary file in memory"));
+					out_file.write(reinterpret_cast<const char*>(pointer.get()), length);
+					out_file.close();
+				}
+			}
+		}
+		else
+		{
+			throw FileFormatException(tr("Error reading info about temporary file in memory"));
+		}
+	}
+}
+
+void OgrFileExport::addPointsToLayer(OGRLayerH layer, const std::function<bool (const Object*)>& condition)
+{
+	const auto& georef = map->getGeoreferencing();
+
+	auto add_feature = [&](Object* object) {
+		auto symbol = object->getSymbol();
+		auto po_feature = ogr::unique_feature(OGR_F_Create(OGR_L_GetLayerDefn(layer)));
+
+		QString sym_name = symbol->getPlainTextName();
+		sym_name.truncate(32);
+		OGR_F_SetFieldString(po_feature.get(), OGR_F_GetFieldIndex(po_feature.get(), "Name"), sym_name.toLatin1().constData());
+
+		auto pt = ogr::unique_geometry(OGR_G_CreateGeometry(wkbPoint));
+		QPointF proj_cord = georef.toProjectedCoords(object->asPoint()->getCoordF());
+
+		OGR_G_SetPoint_2D(pt.get(), 0, proj_cord.x(), proj_cord.y());
+
+		if (need_wgs1984)
+			OGR_G_Transform(pt.get(), transformation.get());
+
+		OGR_F_SetGeometry(po_feature.get(), pt.get());
+
+		if (OGR_L_CreateFeature(layer, po_feature.get()) != OGRERR_NONE)
+			throw FileFormatException(tr("Failed to create point feature in layer"));
+	};
+
+	map->applyOnMatchingObjects(add_feature, condition);
+}
+
+void OgrFileExport::addTextToLayer(OGRLayerH layer, const std::function<bool (const Object*)>& condition)
+{
+	const auto& georef = map->getGeoreferencing();
+
+	auto add_feature = [&](Object* object) {
+		auto po_feature = ogr::unique_feature(OGR_F_Create(OGR_L_GetLayerDefn(layer)));
+
+		QString sym_name = object->asText()->getText();
+		sym_name.truncate(32);
+		OGR_F_SetFieldString(po_feature.get(), OGR_F_GetFieldIndex(po_feature.get(), "Name"), sym_name.toLatin1().constData());
+
+		auto pt = ogr::unique_geometry(OGR_G_CreateGeometry(wkbPoint));
+		QPointF proj_cord = georef.toProjectedCoords(object->asText()->getAnchorCoordF());
+
+		OGR_G_SetPoint_2D(pt.get(), 0, proj_cord.x(), proj_cord.y());
+
+		if (need_wgs1984)
+			OGR_G_Transform(pt.get(), transformation.get());
+
+		OGR_F_SetGeometry(po_feature.get(), pt.get());
+
+		if (OGR_L_CreateFeature(layer, po_feature.get()) != OGRERR_NONE)
+			throw FileFormatException(tr("Failed to create point feature in layer"));
+	};
+
+	map->applyOnMatchingObjects(add_feature, condition);
+}
+
+void OgrFileExport::addLinesToLayer(OGRLayerH layer, const std::function<bool (const Object*)>& condition)
+{
+	const auto& georef = map->getGeoreferencing();
+
+	auto add_feature = [&](Object* object) {
+		auto symbol = object->getSymbol();
+		auto path = object->asPath();
+		if (path->parts().size() < 1)
+			return;
+
+		auto po_feature = ogr::unique_feature(OGR_F_Create(OGR_L_GetLayerDefn(layer)));
+
+		QString sym_name = symbol->getPlainTextName();
+		sym_name.truncate(32);
+		OGR_F_SetFieldString(po_feature.get(), OGR_F_GetFieldIndex(po_feature.get(), "Name"), sym_name.toLatin1().constData());
+
+		auto line_string = ogr::unique_geometry(OGR_G_CreateGeometry(wkbLineString));
+		auto num_coords = path->getCoordinateCount();
+		for (MapCoordVector::size_type i = 0; i < num_coords; i++)
+		{
+			// Skip control point
+			if (i >= 2 && path->getCoordinate(i - 2).isCurveStart())
+				continue;
+
+			QPointF proj_cord = georef.toProjectedCoords(path->getCoordinate(i));
+			OGR_G_AddPoint_2D(line_string.get(), proj_cord.x(), proj_cord.y());
+
+			// Skip control point #2
+			if (path->getCoordinate(i).isCurveStart())
+				i++;
+		}
+
+		if (need_wgs1984)
+			OGR_G_Transform(line_string.get(), transformation.get());
+
+		OGR_F_SetGeometry(po_feature.get(), line_string.get());
+
+		if (OGR_L_CreateFeature(layer, po_feature.get()) != OGRERR_NONE)
+			throw FileFormatException(tr("Failed to create line feature in layer"));
+	};
+
+	map->applyOnMatchingObjects(add_feature, condition);
+}
+
+void OgrFileExport::addAreasToLayer(OGRLayerH layer, const std::function<bool (const Object*)>& condition)
+{
+	const auto& georef = map->getGeoreferencing();
+
+	auto add_feature = [&](Object* object) {
+		auto symbol = object->getSymbol();
+		auto path = object->asPath();
+		if (path->parts().size() < 1)
+			return;
+
+		auto po_feature = ogr::unique_feature(OGR_F_Create(OGR_L_GetLayerDefn(layer)));
+
+		QString sym_name = symbol->getPlainTextName();
+		sym_name.truncate(32);
+		OGR_F_SetFieldString(po_feature.get(), OGR_F_GetFieldIndex(po_feature.get(), "Name"), sym_name.toLatin1().constData());
+
+		auto polygon = ogr::unique_geometry(OGR_G_CreateGeometry(wkbPolygon));
+		auto cur_ring = ogr::unique_geometry(OGR_G_CreateGeometry(wkbLinearRing));
+		auto num_coords = path->getCoordinateCount();
+		for (MapCoordVector::size_type i = 0; i < num_coords; i++)
+		{
+			// Skip control point
+			if (i >= 2 && path->getCoordinate(i - 2).isCurveStart())
+				continue;
+
+			QPointF proj_cord = georef.toProjectedCoords(path->getCoordinate(i));
+			OGR_G_AddPoint_2D(cur_ring.get(), proj_cord.x(), proj_cord.y());
+
+			if (path->getCoordinate(i).isClosePoint())
+			{
+				OGR_G_CloseRings(cur_ring.get());
+				if (need_wgs1984)
+					OGR_G_Transform(cur_ring.get(), transformation.get());
+				OGR_G_AddGeometry(polygon.get(), cur_ring.get());
+				cur_ring.reset(OGR_G_CreateGeometry(wkbLinearRing));
+			}
+			// Skip control point #2
+			if (path->getCoordinate(i).isCurveStart())
+				i++;
+		}
+		OGR_F_SetGeometry(po_feature.get(), polygon.get());
+
+		if (OGR_L_CreateFeature(layer, po_feature.get()) != OGRERR_NONE)
+			throw FileFormatException(tr("Failed to create feature in layer"));
+	};
+
+	map->applyOnMatchingObjects(add_feature, condition);
+}
+
+OGRLayerH OgrFileExport::createLayer(const char* layer_name, OGRwkbGeometryType type)
+{
+#if GDAL_VERSION_NUM >= GDAL_COMPUTE_VERSION(2,0,0)
+	auto po_layer = GDALDatasetCreateLayer(po_ds.get(), layer_name, map_srs.get(), type, nullptr);
+#else
+	auto po_layer = OGR_DS_CreateLayer(po_ds.get(), layer_name, map_srs.get(), type, nullptr);
+#endif
+	if (!po_layer)
+		return nullptr;
+
+	if (OGR_L_CreateField(po_layer, o_name_field.get(), 1) != OGRERR_NONE)
+		addWarning(tr("Failed to create name field"));
+
+	return po_layer;
+}
+
+// static
+void OgrFileExport::vsiRmDirRecursive(const char *dir_name)
+{
+	// Go through our virtual filesystem
+	std::unique_ptr<char*, decltype(&CSLDestroy)> names(VSIReadDir(dir_name), &CSLDestroy);
+	for (auto i = 0; names.get()[i] != NULL; i++)
+	{
+		VSIStatBufL s_stat;
+		QString vsi_full_path = QString::fromLatin1(vsimem_path).append(QString::fromLatin1("/"))
+		                                                                .append(QString::fromLatin1(names.get()[i]));
+		if (VSIStatExL(vsi_full_path.toLatin1(), &s_stat, VSI_STAT_NATURE_FLAG) == 0)
+		{
+			if (VSI_ISDIR(s_stat.st_mode))
+			{
+				// VSIReadDir includes the current path in output
+				if (vsi_full_path.compare(QString::fromLatin1(dir_name)) != 0)
+					vsiRmDirRecursive(vsi_full_path.toLatin1());
+			} else {
+				VSIUnlink(vsi_full_path.toLatin1());
+			}
+		}
+	}
+	VSIRmdir(dir_name);
+}
 
 }  // namespace OpenOrienteering
