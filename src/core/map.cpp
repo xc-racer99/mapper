@@ -682,19 +682,37 @@ bool Map::exportTo(const QString& path, MapView* view, const FileFormat* format)
 	bool success = false;
 	if (file.open(QIODevice::WriteOnly))
 	{
-		try
-		{
-			exporter->doExport();
-		}
-		catch (std::exception &e)
+		if (format->noIoStreamExport())
 		{
 			file.cancelWriting();
-			const QString error = QString::fromLocal8Bit(e.what());
-			QMessageBox::warning(nullptr, tr("Error"), tr("Internal error while saving:\n%1").arg(error));
-			return false;
+			try
+			{
+				exporter->doExport();
+			}
+			catch (std::exception &e)
+			{
+				const QString error = QString::fromLocal8Bit(e.what());
+				QMessageBox::warning(nullptr, tr("Error"), tr("Internal error while saving:\n%1").arg(error));
+				return false;
+			}
+			success = true;
 		}
-		
-		success = file.commit();
+		else
+		{
+			try
+			{
+				exporter->doExport();
+			}
+			catch (std::exception &e)
+			{
+				file.cancelWriting();
+				const QString error = QString::fromLocal8Bit(e.what());
+				QMessageBox::warning(nullptr, tr("Error"), tr("Internal error while saving:\n%1").arg(error));
+				return false;
+			}
+
+			success = file.commit();
+		}
 	}
 	
 	if (!success)

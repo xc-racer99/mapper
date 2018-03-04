@@ -131,9 +131,10 @@ public:
 	 */
 	enum FormatFeatureFlag
 	{
-		ImportSupported = 0x01,
-		ExportSupported = 0x02,
-		ExportLossy     = 0x04,
+		ImportSupported  = 0x01,
+		ExportSupported  = 0x02,
+		ExportLossy      = 0x04,
+		ExportNoIoStream = 0x08,
 		
 		EndOfFormatFeatures
 	};
@@ -221,7 +222,10 @@ public:
 	 *  the application to warn the user before saving to a lossy file type.
 	 */
 	bool isExportLossy() const;
-	
+
+	/** Returns true if the exporter doesn't use/support a QIOStream for its doExport function
+	 */
+	bool noIoStreamExport() const;
 	
 	/** 
 	 * Determines whether this FileFormat is capable of understanding a file
@@ -351,6 +355,12 @@ inline
 bool FileFormat::isExportLossy() const
 {
 	return format_features.testFlag(FileFormat::ExportLossy);
+}
+
+inline
+bool FileFormat::noIoStreamExport() const
+{
+	return format_features.testFlag(FileFormat::ExportNoIoStream);
 }
 
 
