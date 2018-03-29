@@ -312,7 +312,11 @@ OgrFileExportFormat::OgrFileExportFormat()
  : FileFormat(OgrFile, "OGR Export",
               ::OpenOrienteering::ImportExport::tr("Geospatial vector data"),
               QString{},
+#if GDAL_VERSION_NUM >= GDAL_COMPUTE_VERSION(2,0,0)
+              ExportSupported | ExportLossy)
+#else
               ExportSupported | ExportLossy | ExportNoIoStream)
+#endif
 {
 	for (const auto& extension : GdalManager().supportedVectorExportExtensions())
 		addExtension(QString::fromLatin1(extension));
@@ -1432,6 +1436,14 @@ OgrFileExport::OgrFileExport(QIODevice *stream, Map *map, MapView *view)
 {
 	// Extract filename from QIODevice
 	output_file_info = qobject_cast<const QFileDevice*>(stream)->fileName();
+
+#if GDAL_VERSION_NUM >= GDAL_COMPUTE_VERSION(2,0,0)
+	auto write_func = [](const void* buffer, size_t size, size_t count, FILE* stream) {
+		QIODevice *io_dev = reinterpret_cast<QIODevice*>(stream);
+		return static_cast<size_t>(io_dev->write(static_cast<const char*>(buffer), size * count));
+	};
+	VSIStdoutSetRedirection(write_func, reinterpret_cast<FILE*>(stream));
+#endif
 }
 
 void OgrFileExport::doExport()
@@ -1528,7 +1540,11 @@ void OgrFileExport::doExport()
 	}
 
 	// Create output dataset
+#if GDAL_VERSION_NUM >= GDAL_COMPUTE_VERSION(2,0,0)
+	po_ds = ogr::unique_datasource(OGR_Dr_CreateDataSource(po_driver, "/vsistdout/", nullptr));
+#else
 	po_ds = ogr::unique_datasource(OGR_Dr_CreateDataSource(po_driver, output_file_info.absoluteFilePath().toLatin1(), nullptr));
+#endif
 	if (!po_ds)
 		throw FileFormatException(tr("Failed to create dataset.  Error: %1").arg(QString::fromLatin1(CPLGetLastErrorMsg())));
 
@@ -1546,6 +1562,9 @@ void OgrFileExport::doExport()
 	createTextLayer();
 	createLineLayer();
 	createAreaLayer();
+
+	// Flush everything before the QIODevice is closed
+	po_ds.reset();
 }
 
 void OgrFileExport::createPointLayer()

@@ -186,14 +186,17 @@ private:
 			auto cap_create = GDALGetMetadataItem(driver_data, GDAL_DCAP_CREATE, nullptr);
 			if (qstrcmp(cap_create, "YES") == 0)
 			{
-				for (auto pos = 0; pos >= 0; )
+				if (qstrcmp(GDALGetMetadataItem(driver_data, GDAL_DCAP_VIRTUALIO, nullptr), "YES") == 0)
 				{
-					auto start = pos ? pos + 1 : 0;
-					pos = extensions.indexOf(' ', start);
-					auto extension = extensions.mid(start, pos - start);
-					if (extension.isEmpty())
-						continue;
-					enabled_vector_export_extensions.emplace_back(extension);
+					for (auto pos = 0; pos >= 0; )
+					{
+						auto start = pos ? pos + 1 : 0;
+						pos = extensions.indexOf(' ', start);
+						auto extension = extensions.mid(start, pos - start);
+						if (extension.isEmpty())
+							continue;
+						enabled_vector_export_extensions.emplace_back(extension);
+					}
 				}
 			}
 
