@@ -28,6 +28,7 @@
 #include <QHash>
 
 // The GDAL/OGR C API is more stable than the C++ API.
+#include <gdal.h>
 #include <ogr_api.h>
 #include <ogr_srs_api.h>
 
@@ -54,6 +55,19 @@ class TextSymbol;
 
 namespace ogr
 {
+	class GDALDriverHDeleter
+	{
+	public:
+		void operator()(GDALDriverH driver) const
+		{
+			OGR_F_Destroy(driver);
+		}
+	};
+
+	/** A convenience class for OGR C API feature handles, similar to std::unique_ptr. */
+	using unique_driver = std::unique_ptr<typename std::remove_pointer<GDALDriverH>::type, GDALDriverHDeleter>;
+
+
 	class OGRCoordinateTransformationHDeleter
 	{
 	public:
@@ -82,6 +96,18 @@ namespace ogr
 	/** A convenience class for OGR C API datasource handles, similar to std::unique_ptr. */
 	using unique_datasource = std::unique_ptr<typename std::remove_pointer<OGRDataSourceH>::type, OGRDataSourceHDeleter>;
 
+	class OGRFeatureHDeleter
+	{
+	public:
+		void operator()(OGRFeatureH feature) const
+		{
+			OGR_F_Destroy(feature);
+		}
+	};
+
+	/** A convenience class for OGR C API feature handles, similar to std::unique_ptr. */
+	using unique_feature = std::unique_ptr<typename std::remove_pointer<OGRFeatureH>::type, OGRFeatureHDeleter>;
+
 
 	class OGRFieldDefnHDeleter
 	{
@@ -94,6 +120,19 @@ namespace ogr
 
 	/** A convenience class for OGR C API field definition handles, similar to std::unique_ptr. */
 	using unique_fielddefn = std::unique_ptr<typename std::remove_pointer<OGRFieldDefnH>::type, OGRFieldDefnHDeleter>;
+
+
+	class OGRGeometryHDeleter
+	{
+	public:
+		void operator()(OGRGeometryH geometry) const
+		{
+			OGR_G_DestroyGeometry(geometry);
+		}
+	};
+
+	/** A convenience class for OGR C API geometry handles, similar to std::unique_ptr. */
+	using unique_geometry = std::unique_ptr<typename std::remove_pointer<OGRGeometryH>::type, OGRGeometryHDeleter>;
 	
 
 	class OGRSpatialReferenceHDeleter

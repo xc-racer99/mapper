@@ -74,49 +74,6 @@
 
 namespace OpenOrienteering {
 
-namespace ogr {
-
-	class GDALDriverHDeleter
-	{
-	public:
-		void operator()(GDALDriverH driver) const
-		{
-			OGR_F_Destroy(driver);
-		}
-	};
-
-	/** A convenience class for OGR C API feature handles, similar to std::unique_ptr. */
-	using unique_driver = std::unique_ptr<typename std::remove_pointer<GDALDriverH>::type, GDALDriverHDeleter>;
-
-	
-	class OGRFeatureHDeleter
-	{
-	public:
-		void operator()(OGRFeatureH feature) const
-		{
-			OGR_F_Destroy(feature);
-		}
-	};
-	
-	/** A convenience class for OGR C API feature handles, similar to std::unique_ptr. */
-	using unique_feature = std::unique_ptr<typename std::remove_pointer<OGRFeatureH>::type, OGRFeatureHDeleter>;
-	
-
-	class OGRGeometryHDeleter
-	{
-	public:
-		void operator()(OGRGeometryH geometry) const
-		{
-			OGR_G_DestroyGeometry(geometry);
-		}
-	};
-	
-	/** A convenience class for OGR C API geometry handles, similar to std::unique_ptr. */
-	using unique_geometry = std::unique_ptr<typename std::remove_pointer<OGRGeometryH>::type, OGRGeometryHDeleter>;
-}  // namespace ogr
-
-
-
 namespace {
 	
 	void applyPenWidth(OGRStyleToolH tool, LineSymbol* line_symbol)
