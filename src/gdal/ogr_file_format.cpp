@@ -198,7 +198,7 @@ namespace {
 			}
 			else
 			{
-				qDebug("OgrFileFormat: Failed to parse dash pattern '%s'", raw_pattern);
+				qDebug("OgrFileImportFormat: Failed to parse dash pattern '%s'", raw_pattern);
 			}
 		}
 	}
@@ -228,13 +228,13 @@ namespace {
 				}
 				else
 				{
-					qDebug("OgrFileFormat: Unsupported font size unit '%s'", unit.constData());
+					qDebug("OgrFileImportFormat: Unsupported font size unit '%s'", unit.constData());
 				}
 			}
 		}
 		else
 		{
-			qDebug("OgrFileFormat: Failed to parse font size '%s'", font_size_string);
+			qDebug("OgrFileImportFormat: Failed to parse font size '%s'", font_size_string);
 			font_size = 0;
 		}
 		return font_size;
@@ -291,29 +291,37 @@ namespace {
 
 
 
-// ### OgrFileFormat ###
+// ### OgrFileImportFormat ###
 
-OgrFileFormat::OgrFileFormat()
- : FileFormat(OgrFile, "OGR",
-              ::OpenOrienteering::ImportExport::tr("Geospatial vector data"),
-              QString{},
-              ImportSupported | ExportSupported | ExportLossy)
+OgrFileImportFormat::OgrFileImportFormat()
+ : FileFormat(OgrFile, "OGR Import", ::OpenOrienteering::ImportExport::tr("Geospatial vector data"), QString{}, ImportSupported)
 {
-	for (const auto& extension : GdalManager().supportedVectorExtensions())
+	for (const auto& extension : GdalManager().supportedVectorImportExtensions())
 		addExtension(QString::fromLatin1(extension));
 }
 
-
-std::unique_ptr<Importer> OgrFileFormat::makeImporter(QIODevice* stream, Map* map, MapView* view) const
+std::unique_ptr<Importer> OgrFileImportFormat::makeImporter(QIODevice* stream, Map* map, MapView* view) const
 {
 	return std::make_unique<OgrFileImport>(stream, map, view);
 }
 
-std::unique_ptr<Exporter> OgrFileFormat::makeExporter(QIODevice* stream, Map* map, MapView* view) const
+
+// ### OgrFileExportFormat ###
+
+OgrFileExportFormat::OgrFileExportFormat()
+ : FileFormat(OgrFile, "OGR Export",
+              ::OpenOrienteering::ImportExport::tr("Geospatial vector data"),
+              QString{},
+              ExportSupported | ExportLossy)
+{
+	for (const auto& extension : GdalManager().supportedVectorExportExtensions())
+		addExtension(QString::fromLatin1(extension));
+}
+
+std::unique_ptr<Exporter> OgrFileExportFormat::makeExporter(QIODevice* stream, Map* map, MapView* view) const
 {
 	return std::make_unique<OgrFileExport>(stream, map, view);
 }
-
 
 
 // ### OgrFileImport ###
@@ -1470,12 +1478,6 @@ void OgrFileExport::doExport()
 			auto extension = extensions.mid(start, pos - start);
 			if (file_extn == QString::fromLatin1(extension))
 			{
-				auto cap_ogr = GDALGetMetadataItem(driver_data, GDAL_DCAP_VECTOR, nullptr);
-				if (qstrcmp(cap_ogr, "YES") != 0)
-					continue;
-				auto cap_open = GDALGetMetadataItem(driver_data, GDAL_DCAP_CREATE, nullptr);
-				if (qstrcmp(cap_open, "YES") != 0)
-					continue;
 				po_driver = driver_data;
 				break;
 			}

@@ -41,19 +41,34 @@ class MapView;
  * so it can be imported into an existing map. This is the major reason for
  * implementing the OGR support as a FileFormat.
  */
-class OgrFileFormat : public FileFormat
+class OgrFileImportFormat : public FileFormat
 {
 public:
 	/**
-	 * Constructs a new OgrFileFormat.
+	 * Constructs a new OgrFileImportFormat.
 	 */
-	OgrFileFormat();
+	OgrFileImportFormat();
 	
 	
 	/**
 	 * Creates an importer for files supported by OGR.
 	 */
 	std::unique_ptr<Importer> makeImporter(QIODevice* stream, Map* map, MapView* view) const override;
+};
+
+/**
+ * A FileFormat for geospatial vector data supported by OGR that can be exported.
+ *
+ * It must be distinct from OgrFileImportFormat as some OGR formats
+ * support write but not read or vice versa.
+ */
+class OgrFileExportFormat : public FileFormat
+{
+public:
+	/**
+	 * Constructs a new OgrFileExportFormat.
+	 */
+	OgrFileExportFormat();
 
 	/**
 	 * Creates an Exporter for files supported by OGR.

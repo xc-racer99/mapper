@@ -106,7 +106,7 @@ namespace {
 
 const std::vector<QByteArray>& OgrTemplate::supportedExtensions()
 {
-	return GdalManager().supportedVectorExtensions();
+	return GdalManager().supportedVectorImportExtensions();
 }
 
 
