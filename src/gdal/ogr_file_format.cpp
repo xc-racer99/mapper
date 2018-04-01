@@ -63,6 +63,7 @@
 #include "core/objects/object.h"
 #include "core/objects/text_object.h"
 #include "core/symbols/area_symbol.h"
+#include "core/symbols/combined_symbol.h"
 #include "core/symbols/line_symbol.h"
 #include "core/symbols/point_symbol.h"
 #include "core/symbols/symbol.h"
@@ -1520,6 +1521,9 @@ void OgrFileExport::doExport()
 	o_name_field = ogr::unique_fielddefn(OGR_Fld_Create("Name", OFTString));
 	OGR_Fld_SetWidth(o_name_field.get(), 32);
 
+	// Setup style table
+	populateStyleTable();
+
 	if (one_layer)
 	{
 		auto layer = createLayer("Layer", wkbUnknown);
@@ -1648,6 +1652,9 @@ void OgrFileExport::addPointsToLayer(OGRLayerH layer, const std::function<bool (
 
 		OGR_F_SetGeometry(po_feature.get(), pt.get());
 
+		OGR_F_SetStyleString(po_feature.get(),
+		                     OGR_STBL_Find(table.get(), QString::number(map->findSymbolIndex(symbol)).toLatin1().constData()));
+
 		if (OGR_L_CreateFeature(layer, po_feature.get()) != OGRERR_NONE)
 			throw FileFormatException(tr("Failed to create point feature in layer"));
 	};
@@ -1675,6 +1682,9 @@ void OgrFileExport::addTextToLayer(OGRLayerH layer, const std::function<bool (co
 			OGR_G_Transform(pt.get(), transformation.get());
 
 		OGR_F_SetGeometry(po_feature.get(), pt.get());
+
+		OGR_F_SetStyleString(po_feature.get(),
+		                     OGR_STBL_Find(table.get(), QString::number(map->findSymbolIndex(object->getSymbol())).toLatin1().constData()));
 
 		if (OGR_L_CreateFeature(layer, po_feature.get()) != OGRERR_NONE)
 			throw FileFormatException(tr("Failed to create point feature in layer"));
@@ -1719,6 +1729,9 @@ void OgrFileExport::addLinesToLayer(OGRLayerH layer, const std::function<bool (c
 			OGR_G_Transform(line_string.get(), transformation.get());
 
 		OGR_F_SetGeometry(po_feature.get(), line_string.get());
+
+		OGR_F_SetStyleString(po_feature.get(),
+		                     OGR_STBL_Find(table.get(), QString::number(map->findSymbolIndex(symbol)).toLatin1().constData()));
 
 		if (OGR_L_CreateFeature(layer, po_feature.get()) != OGRERR_NONE)
 			throw FileFormatException(tr("Failed to create line feature in layer"));
@@ -1769,6 +1782,9 @@ void OgrFileExport::addAreasToLayer(OGRLayerH layer, const std::function<bool (c
 		}
 		OGR_F_SetGeometry(po_feature.get(), polygon.get());
 
+		OGR_F_SetStyleString(po_feature.get(),
+		                     OGR_STBL_Find(table.get(), QString::number(map->findSymbolIndex(symbol)).toLatin1().constData()));
+
 		if (OGR_L_CreateFeature(layer, po_feature.get()) != OGRERR_NONE)
 			throw FileFormatException(tr("Failed to create feature in layer"));
 	};
@@ -1790,6 +1806,105 @@ OGRLayerH OgrFileExport::createLayer(const char* layer_name, OGRwkbGeometryType 
 		addWarning(tr("Failed to create name field"));
 
 	return po_layer;
+}
+
+void OgrFileExport::populateStyleTable()
+{
+	table = ogr::unique_styletable(OGR_STBL_Create());
+	ogr::unique_stylemanager manager = ogr::unique_stylemanager(OGR_SM_Create(table.get()));
+
+	auto get_pen_style = [](const Symbol* symbol) {
+		auto main_color = symbol->guessDominantColor();
+		if (!main_color)
+			return QString::fromLatin1("PEN(c:#00000000)");
+
+		QString rgb = QColor(main_color->getRgb()).name();
+		return QString::fromLatin1("PEN(c:%1)").arg(rgb);
+	};
+
+	auto get_brush_style = [](const Symbol* symbol) {
+		auto main_color = symbol->guessDominantColor();
+		if (!main_color)
+			return QString::fromLatin1("BRUSH(fc:#00000000)");
+
+		QString rgb = QColor(main_color->getRgb()).name();
+		return QString::fromLatin1("BRUSH(fc:%1)").arg(rgb);
+	};
+
+	// Go through all used symbols and create a style table
+	std::vector<bool> symbols_in_use;
+	map->determineSymbolsInUse(symbols_in_use);
+
+	for (auto i = map->getNumSymbols() - 1; i >= 0; --i)
+	{
+		if (symbols_in_use[i])
+		{
+			const auto& symbol = map->getSymbol(i);
+			switch (symbol->getType())
+			{
+			case Symbol::Text:
+				{
+					QString new_style = QString::fromLatin1("LABEL(f:\"")
+					                    .append(symbol->asText()->getFontFamily())
+					                    .append(QString::fromLatin1("\", s:"))
+					                    .append(QString::number(12))
+					                    .append(QString::fromLatin1(", t:{Name})"));
+					OGR_SM_AddStyle(manager.get(),
+					                QString::number(map->findSymbolIndex(symbol)).toLatin1(), new_style.toLatin1());
+					break;
+				}
+			case Symbol::Point:
+			case Symbol::Line:
+				{
+					OGR_SM_AddStyle(manager.get(),
+					                QString::number(map->findSymbolIndex(symbol)).toLatin1(),
+					                get_pen_style(symbol).toLatin1());
+					break;
+				}
+			case Symbol::Area:
+				{
+					OGR_SM_AddStyle(manager.get(),
+					                QString::number(map->findSymbolIndex(symbol)).toLatin1(),
+					                get_brush_style(symbol)
+					                .append(QString::fromLatin1(";"))
+					                .append(get_pen_style(symbol)).toLatin1());
+					break;
+				}
+			case Symbol::Combined:
+				{
+					QString style;
+					const auto& combined = symbol->asCombined();
+					for (auto i = combined->getNumParts() - 1; i >= 0; i--)
+					{
+						const auto& subsymbol = combined->getPart(i);
+						switch (subsymbol->getType())
+						{
+						case Symbol::Point:
+						case Symbol::Line:
+							{
+								style.append(get_pen_style(subsymbol).append(QString::fromLatin1(";")));
+								break;
+							}
+						case Symbol::Area:
+							{
+								style.append(get_brush_style(subsymbol).append(QString::fromLatin1(";")));
+								break;
+							}
+						default:
+							break;
+						}
+
+					}
+					OGR_SM_AddStyle(manager.get(),
+					                QString::number(map->findSymbolIndex(symbol)).toLatin1(),
+					                style.toLatin1());
+					break;
+				}
+			default:
+				break;
+			}
+		}
+	}
 }
 
 // static

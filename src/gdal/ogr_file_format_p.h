@@ -161,6 +161,19 @@ namespace ogr
 	
 	/** A convenience class for OGR C API style manager handles, similar to std::unique_ptr. */
 	using unique_stylemanager = std::unique_ptr<typename std::remove_pointer<OGRStyleMgrH>::type, OGRStyleMgrHDeleter>;
+
+
+	class OGRStyleTableHDeleter
+	{
+	public:
+		void operator()(OGRStyleTableH table) const
+		{
+			OGR_STBL_Destroy(table);
+		}
+	};
+
+	/** A convenience class for OGR C API style manager handles, similar to std::unique_ptr. */
+	using unique_styletable = std::unique_ptr<typename std::remove_pointer<OGRStyleTableH>::type, OGRStyleTableHDeleter>;
 }
 
 
@@ -363,6 +376,8 @@ protected:
 
 	OGRLayerH createLayer(const char* layer_name, OGRwkbGeometryType type);
 
+	void populateStyleTable();
+
 private:
 	// Actual file
 	QFileInfo output_file_info;
@@ -370,6 +385,8 @@ private:
 
 	// Main location in GDAL's vsimem
 	static constexpr const char* vsimem_path = "/vsimem/ogr_export/";
+
+	ogr::unique_styletable table;
 
 	ogr::unique_datasource po_ds;
 	ogr::unique_fielddefn o_name_field;
