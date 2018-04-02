@@ -378,6 +378,7 @@ protected:
 
 	void populateStyleTable();
 
+	static double cubicInterpolation(const double t, const double pt_a, const double ctrl_b, const double ctrl_c, const double pt_d);
 private:
 	// Actual file
 	QFileInfo output_file_info;

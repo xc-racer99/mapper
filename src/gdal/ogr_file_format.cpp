@@ -1713,16 +1713,32 @@ void OgrFileExport::addLinesToLayer(OGRLayerH layer, const std::function<bool (c
 		auto num_coords = path->getCoordinateCount();
 		for (MapCoordVector::size_type i = 0; i < num_coords; i++)
 		{
-			// Skip control point
-			if (i >= 2 && path->getCoordinate(i - 2).isCurveStart())
-				continue;
-
-			QPointF proj_cord = georef.toProjectedCoords(path->getCoordinate(i));
-			OGR_G_AddPoint_2D(line_string.get(), proj_cord.x(), proj_cord.y());
-
-			// Skip control point #2
+			// Linear approx of bezier curve
 			if (path->getCoordinate(i).isCurveStart())
-				i++;
+			{
+				for (double j = 0; j <= 10.0; j++)
+				{
+					MapCoordF coord(cubicInterpolation(j / 10.0,
+					                                   path->getCoordinate(i).x(),
+					                                   path->getCoordinate(i + 1).x(),
+					                                   path->getCoordinate(i + 2).x(),
+					                                   path->getCoordinate(i + 3).x()),
+					                cubicInterpolation(j / 10.0,
+					                                   path->getCoordinate(i).y(),
+					                                   path->getCoordinate(i + 1).y(),
+					                                   path->getCoordinate(i + 2).y(),
+					                                   path->getCoordinate(i + 3).y())
+					                );
+					QPointF proj_cord = georef.toProjectedCoords(coord);
+					OGR_G_AddPoint_2D(line_string.get(), proj_cord.x(), proj_cord.y());
+				}
+				i += 2;
+			}
+			else
+			{
+				QPointF proj_cord = georef.toProjectedCoords(path->getCoordinate(i));
+				OGR_G_AddPoint_2D(line_string.get(), proj_cord.x(), proj_cord.y());
+			}
 		}
 
 		if (need_wgs1984)
@@ -1761,12 +1777,32 @@ void OgrFileExport::addAreasToLayer(OGRLayerH layer, const std::function<bool (c
 		auto num_coords = path->getCoordinateCount();
 		for (MapCoordVector::size_type i = 0; i < num_coords; i++)
 		{
-			// Skip control point
-			if (i >= 2 && path->getCoordinate(i - 2).isCurveStart())
-				continue;
-
-			QPointF proj_cord = georef.toProjectedCoords(path->getCoordinate(i));
-			OGR_G_AddPoint_2D(cur_ring.get(), proj_cord.x(), proj_cord.y());
+			// Linear approx of bezier curve
+			if (path->getCoordinate(i).isCurveStart())
+			{
+				for (double j = 0; j <= 10.0; j++)
+				{
+					MapCoordF coord(cubicInterpolation(j / 10.0,
+					                                   path->getCoordinate(i).x(),
+					                                   path->getCoordinate(i + 1).x(),
+					                                   path->getCoordinate(i + 2).x(),
+					                                   path->getCoordinate(i + 3).x()),
+					                cubicInterpolation(j / 10.0,
+					                                   path->getCoordinate(i).y(),
+					                                   path->getCoordinate(i + 1).y(),
+					                                   path->getCoordinate(i + 2).y(),
+					                                   path->getCoordinate(i + 3).y())
+					                );
+					QPointF proj_cord = georef.toProjectedCoords(coord);
+					OGR_G_AddPoint_2D(cur_ring.get(), proj_cord.x(), proj_cord.y());
+				}
+				i += 2;
+			}
+			else
+			{
+				QPointF proj_cord = georef.toProjectedCoords(path->getCoordinate(i));
+				OGR_G_AddPoint_2D(cur_ring.get(), proj_cord.x(), proj_cord.y());
+			}
 
 			if (path->getCoordinate(i).isClosePoint())
 			{
@@ -1776,9 +1812,6 @@ void OgrFileExport::addAreasToLayer(OGRLayerH layer, const std::function<bool (c
 				OGR_G_AddGeometry(polygon.get(), cur_ring.get());
 				cur_ring.reset(OGR_G_CreateGeometry(wkbLinearRing));
 			}
-			// Skip control point #2
-			if (path->getCoordinate(i).isCurveStart())
-				i++;
 		}
 		OGR_F_SetGeometry(po_feature.get(), polygon.get());
 
@@ -1930,6 +1963,13 @@ void OgrFileExport::vsiRmDirRecursive(const char *dir_name)
 		}
 	}
 	VSIRmdir(dir_name);
+}
+
+// static
+double OgrFileExport::cubicInterpolation(const double t, const double pt_a, const double ctrl_b, const double ctrl_c, const double pt_d)
+{
+	const double s = 1 - t;
+	return s*s*s*pt_a + 3*s*s*t*ctrl_b + 3*s*t*t*ctrl_c + t*t*t*pt_d;
 }
 
 }  // namespace OpenOrienteering
