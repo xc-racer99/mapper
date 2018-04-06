@@ -1384,6 +1384,9 @@ LatLon OgrFileImport::calcAverageLatLon(OGRDataSourceH data_source)
 OgrFileExport::OgrFileExport(const QString& path, const Map* map, const MapView* view)
 : Exporter(path, map, view)
 {
+	GdalManager manager;
+	bool per_symbol_layers = manager.isExportOptionEnabled(GdalManager::PER_SYMBOL_LAYERS);
+	setOption(QString::fromLatin1("Per Symbol Layers"), per_symbol_layers);
 }
 
 OgrFileExport::~OgrFileExport() = default;
@@ -1543,6 +1546,103 @@ bool OgrFileExport::exportImplementation()
 		addTextToLayer(layer, is_text_object);
 		addLinesToLayer(layer, is_line_object);
 		addAreasToLayer(layer, is_area_object);
+	}
+	else if (option(QString::fromLatin1("Per Symbol Layers")).toBool())
+	{
+		// Determine symbols in use
+		std::vector<bool> symbols_in_use;
+		map->determineSymbolsInUse(symbols_in_use);
+
+		// Add points, lines, areas in this order for driver compatability (esp GPX)
+		for (auto i = map->getNumSymbols() - 1; i >= 0; --i)
+		{
+			if (symbols_in_use[i])
+			{
+				const auto& symbol = map->getSymbol(i);
+				if (symbol->isHelperSymbol())
+					continue;
+
+				if (symbol->getType() == Symbol::Point)
+				{
+					auto layer = createLayer(QString::fromLatin1("%1_%2").arg(info.baseName(), symbol->getPlainTextName()).toLatin1(), wkbPoint);
+					if (!layer)
+					{
+						addWarning(QString::fromLatin1("Failed to export symbol %1, %2")
+						           .arg(symbol->getPlainTextName())
+						           .arg(QString::fromLatin1(CPLGetLastErrorMsg())));
+						continue;
+					}
+					addPointsToLayer(layer, [&symbol](const Object* object) {
+						const auto& sym = object->getSymbol();
+						return sym && sym->equals(symbol);
+					});
+				}
+				else if (symbol->getType() == Symbol::Text)
+				{
+					auto layer = createLayer(QString::fromLatin1("%1_%2").arg(info.baseName(), symbol->getPlainTextName()).toLatin1(), wkbPoint);
+					if (!layer)
+					{
+						addWarning(QString::fromLatin1("Failed to export symbol %1, %2")
+						           .arg(symbol->getPlainTextName())
+						           .arg(QString::fromLatin1(CPLGetLastErrorMsg())));
+						continue;
+					}
+					addTextToLayer(layer, [&symbol](const Object* object) {
+						const auto& sym = object->getSymbol();
+						return sym && sym->equals(symbol);
+					});
+				}
+			}
+		}
+
+		// Line symbols
+		for (auto i = map->getNumSymbols() - 1; i >= 0; --i)
+		{
+			if (symbols_in_use[i])
+			{
+				const auto& symbol = map->getSymbol(i);
+				if (symbol->getType() == Symbol::Line
+				    || (symbol->getType() == Symbol::Combined && !(symbol->getContainedTypes() & Symbol::Area)))
+				{
+					auto layer = createLayer(QString::fromLatin1("%1_%2").arg(info.baseName(), symbol->getPlainTextName()).toLatin1(), wkbLineString);
+					if (!layer)
+					{
+						addWarning(QString::fromLatin1("Failed to export symbol %1, %2")
+						           .arg(symbol->getPlainTextName())
+						           .arg(QString::fromLatin1(CPLGetLastErrorMsg())));
+						continue;
+					}
+					addLinesToLayer(layer, [&symbol](const Object* object) {
+						const auto& sym = object->getSymbol();
+						return sym && sym->equals(symbol);
+					});
+				}
+			}
+		}
+
+		// Area symbols
+		for (auto i = map->getNumSymbols() - 1; i >= 0; --i)
+		{
+			if (symbols_in_use[i])
+			{
+				const auto& symbol = map->getSymbol(i);
+				if (symbol->getContainedTypes() & Symbol::Area)
+				{
+					auto layer = createLayer(QString::fromLatin1("%1_%2").arg(info.baseName(), symbol->getPlainTextName()).toLatin1(), wkbPolygon);
+					if (!layer)
+					{
+						addWarning(QString::fromLatin1("Failed to export symbol %1, %2")
+						           .arg(symbol->getPlainTextName())
+						           .arg(QString::fromLatin1(CPLGetLastErrorMsg())));
+						continue;
+					}
+					addAreasToLayer(layer, [&symbol](const Object* object) {
+						const auto& sym = object->getSymbol();
+						return sym && sym->equals(symbol);
+					});
+				}
+			}
+		}
 	}
 	else
 	{
