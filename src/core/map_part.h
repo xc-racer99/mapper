@@ -216,6 +216,12 @@ public:
 	 * @copydetails Map::applyOnMatchingObjects()
 	 */
 	void applyOnMatchingObjects(const std::function<void (Object*)>& operation, const std::function<bool (const Object*)>& condition);
+
+	/**
+	 * @copybrief   Map::applyOnMatchingObjects()
+	 * @copydetails Map::applyOnMatchingObjects()
+	 */
+	void applyOnMatchingObjects(const std::function<void (const Object*)>& operation, const std::function<bool (const Object*)>& condition) const;
 	
 	/**
 	 * @copybrief   Map::applyOnMatchingObjects()
